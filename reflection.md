@@ -2,10 +2,28 @@
 
 ## 1. System Design
 
+**Core User Actions**
+
+1. **Add a pet care task** – Create a care task (walk, feeding, medication, grooming) with duration and priority.
+2. **Generate a daily care plan** – Produce an optimized schedule based on available time windows, task priority, and preferences, with reasoning for why tasks were ordered that way.
+3. **Enter pet and owner information** – Input owner details (name, availability) and pet details (name, category, special needs) so the planner can personalize recommendations.
+4. **Authenticate / manage account** – Register and log in so pet profiles, task history, and schedules persist across sessions.
+
+*Full system architecture, object designs, tradeoff discussions, and finalized decisions are documented in [system_design.md](system_design.md).*
+
 **a. Initial design**
 
-- Briefly describe your initial UML design.
-- What classes did you include, and what responsibilities did you assign to each?
+The initial UML is a class diagram with 8 objects (6 core MVP + 2 stretch goal). The core classes and their responsibilities:
+
+- **User** — Holds login credentials and time-window availability. Owns a list of Pets. Handles authentication and availability updates.
+- **Pet** — Represents an individual pet with a name, category (enum), age, health notes, and special needs. Owns its own list of Tasks.
+- **PetCategory (Enum)** — Static set of species types (Dog, Cat, Fish, etc.). Each value carries default task templates and care guidelines that auto-populate when a new pet is created.
+- **Task** — The core work unit: name, duration, priority, frequency (once/daily/weekly), status, and a deferred-day counter. Handles marking itself complete, missed, or reset for recurrence.
+- **TimeWindow** — A simple start/end time pair representing a block of user availability. Used by both User and Scheduler.
+- **Scheduler** — The scheduling engine. Takes a pool of tasks + availability windows, scores tasks (priority × overdue days × time-sensitivity), and greedily places them into the best-fit windows. Produces a DailyPlan draft.
+- **DailyPlan** — The output of the Scheduler: an ordered list of time-slotted tasks, a deferred list, a backlog, and per-task explanations. Supports accept/edit/regenerate workflow.
+- **RewardSystem** *(stretch)* — Tracks streaks, badges, and pet happiness scores. Awards tiered points based on completion timing.
+- **Reminder** *(stretch)* — Sends notifications before and at task time.
 
 **b. Design changes**
 

@@ -29,13 +29,50 @@ class PetCategory(Enum):
 
     def get_default_tasks(self) -> list[dict]:
         """Return a list of template task dicts for this species."""
-        # TODO: implement default task templates per category
-        pass
+        defaults = {
+            "dog": [
+                {"name": "Walk", "duration": 30, "priority": "high", "frequency": "daily"},
+                {"name": "Feed", "duration": 10, "priority": "high", "frequency": "daily"},
+                {"name": "Groom", "duration": 20, "priority": "medium", "frequency": "weekly"},
+            ],
+            "cat": [
+                {"name": "Feed", "duration": 10, "priority": "high", "frequency": "daily"},
+                {"name": "Clean litter box", "duration": 10, "priority": "high", "frequency": "daily"},
+                {"name": "Play session", "duration": 15, "priority": "medium", "frequency": "daily"},
+            ],
+            "spider": [
+                {"name": "Feed", "duration": 5, "priority": "high", "frequency": "weekly"},
+                {"name": "Mist enclosure", "duration": 5, "priority": "medium", "frequency": "daily"},
+            ],
+            "reptile": [
+                {"name": "Feed", "duration": 10, "priority": "high", "frequency": "daily"},
+                {"name": "Check temperature", "duration": 5, "priority": "high", "frequency": "daily"},
+                {"name": "Clean enclosure", "duration": 20, "priority": "medium", "frequency": "weekly"},
+            ],
+            "fish": [
+                {"name": "Feed", "duration": 5, "priority": "high", "frequency": "daily"},
+                {"name": "Check water quality", "duration": 10, "priority": "high", "frequency": "weekly"},
+                {"name": "Clean tank", "duration": 30, "priority": "medium", "frequency": "weekly"},
+            ],
+            "bird": [
+                {"name": "Feed", "duration": 10, "priority": "high", "frequency": "daily"},
+                {"name": "Clean cage", "duration": 15, "priority": "medium", "frequency": "daily"},
+                {"name": "Social time", "duration": 20, "priority": "medium", "frequency": "daily"},
+            ],
+        }
+        return defaults.get(self.value, [])
 
     def get_care_tips(self) -> str:
         """Return species-specific care guidelines as a string."""
-        # TODO: implement care tips per category
-        pass
+        tips = {
+            "dog": "Dogs need daily walks, consistent feeding schedules, and regular vet checkups. Socialize early and often.",
+            "cat": "Cats need clean litter boxes, fresh water, and vertical spaces to climb. Schedule regular play sessions.",
+            "spider": "Maintain proper humidity in the enclosure. Feed appropriately sized prey. Avoid handling during molting.",
+            "reptile": "Monitor temperature and humidity closely. Provide UVB lighting. Research species-specific diet needs.",
+            "fish": "Test water parameters weekly. Avoid overfeeding. Perform partial water changes regularly.",
+            "bird": "Birds need daily social interaction. Keep cages clean and provide foraging toys for mental stimulation.",
+        }
+        return tips.get(self.value, "No tips available for this category.")
 
 
 class Priority(Enum):
@@ -85,8 +122,9 @@ class TimeWindow:
 
     def get_duration_minutes(self) -> int:
         """Return the length of this window in minutes."""
-        # TODO: implement duration calculation
-        pass
+        start_minutes = self.start.hour * 60 + self.start.minute
+        end_minutes = self.end.hour * 60 + self.end.minute
+        return end_minutes - start_minutes
 
 
 @dataclass
@@ -107,24 +145,25 @@ class Task:
 
     def mark_complete(self) -> None:
         """Set status to COMPLETED."""
-        # TODO: implement
-        pass
+        self.status = TaskStatus.COMPLETED
 
     def mark_missed(self) -> None:
         """Set status to MISSED and increment days_deferred."""
-        # TODO: implement
-        pass
+        self.status = TaskStatus.MISSED
+        self.days_deferred += 1
 
     def is_overdue(self) -> bool:
         """Return True if the task is past its scheduled time and still pending."""
-        # TODO: implement
-        pass
+        if self.status != TaskStatus.PENDING:
+            return False
+        if self.scheduled_time is None:
+            return False
+        return datetime.now() > self.scheduled_time 
 
     def reset(self) -> None:
         """Reset status to PENDING for the next recurrence cycle."""
-        # TODO: implement
-        pass
-
+        self.status = TaskStatus.PENDING
+        self.days_deferred = 0
 
 @dataclass
 class Pet:
@@ -141,24 +180,29 @@ class Pet:
 
     def add_task(self, task: Task) -> None:
         """Append a task to this pet's task list."""
-        # TODO: implement
-        pass
+        self.tasks.append(task)
 
     def remove_task(self, task_id: int) -> None:
         """Remove a task by its ID."""
-        # TODO: implement
-        pass
+        self.tasks = [t for t in self.tasks if t.task_id != task_id]
 
     def get_tasks(self) -> list[Task]:
         """Return all tasks for this pet."""
-        # TODO: implement
-        pass
+        return self.tasks
 
     def get_profile_summary(self) -> str:
         """Return a human-readable summary of this pet's info and pending tasks."""
-        # TODO: implement
-        pass
-
+        pending = [t for t in self.tasks if t.status == TaskStatus.PENDING]
+        summary = (
+            f"{self.name} ({self.category.value}) \u2014 Age: {self.age}, "
+            f"Weight: {self.weight}kg\n"
+            f"Pending tasks: {len(pending)}"
+        )
+        if self.health_notes:
+            summary += f"\nHealth notes: {self.health_notes}"
+        if self.special_needs:
+            summary += f"\nSpecial needs: {self.special_needs}"
+        return summary
 
 @dataclass
 class User:
@@ -174,33 +218,34 @@ class User:
 
     def add_pet(self, pet: Pet) -> None:
         """Add a pet to the user's profile."""
-        # TODO: implement
-        pass
+        self.pets.append(pet)
 
     def remove_pet(self, pet_id: int) -> None:
         """Remove a pet by its ID."""
-        # TODO: implement
-        pass
+        self.pets = [p for p in self.pets if p.pet_id != pet_id]
 
     def get_pets(self) -> list[Pet]:
         """Return all pets belonging to this user."""
-        # TODO: implement
-        pass
+        return self.pets
 
     def authenticate(self, password: str) -> bool:
         """Verify a plaintext password against the stored hash."""
-        # TODO: implement with bcrypt/hashlib
-        pass
+        # MVP: simple hash comparison. Future: use bcrypt.
+        import hashlib
+        return hashlib.sha256(password.encode()).hexdigest() == self.password_hash
 
     def get_total_task_load(self) -> int:
         """Return total duration (minutes) of all pending tasks across all pets."""
-        # TODO: implement
-        pass
+        total = 0
+        for pet in self.pets:
+            for task in pet.tasks:
+                if task.status == TaskStatus.PENDING:
+                    total += task.duration
+        return total
 
     def update_availability(self, day: str, windows: list[TimeWindow]) -> None:
         """Replace the availability windows for a specific day."""
-        # TODO: implement
-        pass
+        self.availability[day] = windows
 
 
 # ──────────────────────────────────────────────
@@ -223,23 +268,25 @@ class DailyPlan:
 
     def accept(self) -> None:
         """Promote the plan from DRAFT to ACCEPTED."""
-        # TODO: implement
-        pass
+        self.status = PlanStatus.ACCEPTED
 
     def add_task(self, task: Task) -> None:
         """Manually insert a task into the plan (user edit)."""
-        # TODO: implement
-        pass
+        self.scheduled_tasks.append(task)
+        self.total_duration += task.duration
 
     def remove_task(self, task_id: int) -> None:
         """Remove a task from the plan (user edit)."""
-        # TODO: implement
-        pass
+        for task in self.scheduled_tasks:
+            if task.task_id == task_id:
+                self.total_duration -= task.duration
+                break
+        self.scheduled_tasks = [t for t in self.scheduled_tasks if t.task_id != task_id]
 
     def reorder_tasks(self, new_order: list[int]) -> None:
         """Rearrange scheduled_tasks by a list of task IDs in desired order."""
-        # TODO: implement
-        pass
+        task_map = {t.task_id: t for t in self.scheduled_tasks}
+        self.scheduled_tasks = [task_map[tid] for tid in new_order if tid in task_map]
 
     def regenerate(self, new_availability: list[TimeWindow]) -> DailyPlan:
         """Re-run the Scheduler on remaining incomplete tasks with updated windows."""
@@ -248,13 +295,17 @@ class DailyPlan:
 
     def get_next_task(self) -> Optional[Task]:
         """Return the next pending task in the schedule."""
-        # TODO: implement
-        pass
+        for task in self.scheduled_tasks:
+            if task.status == TaskStatus.PENDING:
+                return task
+        return None
 
     def get_completion_percentage(self) -> float:
         """Return the percentage of scheduled tasks that are completed."""
-        # TODO: implement
-        pass
+        if not self.scheduled_tasks:
+            return 0.0
+        completed = sum(1 for t in self.scheduled_tasks if t.status == TaskStatus.COMPLETED)
+        return (completed / len(self.scheduled_tasks)) * 100.0
 
 
 class Scheduler:
@@ -281,18 +332,83 @@ class Scheduler:
         4. Tasks that don't fit go to deferred_tasks or backlog.
         5. Return a DailyPlan with per-task explanations.
         """
-        # TODO: implement
-        pass
+        # 1. Collect all pending tasks across all pets
+        self.tasks = []
+        for pet in pets:
+            for task in pet.tasks:
+                if task.status == TaskStatus.PENDING:
+                    self.tasks.append(task)
+
+        self.constraints = availability
+
+        # 2. Calculate total available minutes
+        total_available = sum(w.get_duration_minutes() for w in availability)
+
+        # 3. Score and sort tasks (highest priority first)
+        ranked = self.prioritize_tasks()
+
+        # 4. Greedily place tasks into available time
+        scheduled = []
+        deferred = []
+        backlog = []
+        explanation = {}
+        time_used = 0
+
+        for task in ranked:
+            if time_used + task.duration <= total_available:
+                scheduled.append(task)
+                explanation[task.task_id] = (
+                    f"Scheduled: priority={task.priority.value}, "
+                    f"score={self._score_task(task):.1f}, "
+                    f"duration={task.duration}min"
+                )
+                time_used += task.duration
+            else:
+                # Doesn't fit — route by priority
+                if task.priority == Priority.LOW:
+                    backlog.append(task)
+                else:
+                    deferred.append(task)
+
+        # 5. Build and return the DailyPlan
+        owner = User(user_id=0, username="system", email="", password_hash="")
+        return DailyPlan(
+            date=date.today(),
+            owner=owner,
+            scheduled_tasks=scheduled,
+            deferred_tasks=deferred,
+            backlog=backlog,
+            total_duration=time_used,
+            explanation=explanation,
+            status=PlanStatus.DRAFT,
+        )
+
+    def _score_task(self, task: Task) -> float:
+        """Calculate the composite score for a single task."""
+        priority_weights = {
+            Priority.HIGH: 3.0,
+            Priority.MEDIUM: 2.0,
+            Priority.LOW: 1.0,
+        }
+        weight = priority_weights[task.priority]
+        return weight * (1 + task.days_deferred)
 
     def prioritize_tasks(self) -> list[Task]:
         """Score and sort tasks by weighted composite score (descending)."""
-        # TODO: implement scoring formula
-        pass
+        return sorted(self.tasks, key=lambda t: self._score_task(t), reverse=True)
 
     def resolve_conflicts(self) -> list[Task]:
         """Identify tasks that don't fit and return them with reasons for deferral."""
-        # TODO: implement overflow handling
-        pass
+        total_available = sum(w.get_duration_minutes() for w in self.constraints)
+        ranked = self.prioritize_tasks()
+        conflicts = []
+        time_used = 0
+        for task in ranked:
+            if time_used + task.duration > total_available:
+                conflicts.append(task)
+            else:
+                time_used += task.duration
+        return conflicts
 
 
 # ──────────────────────────────────────────────

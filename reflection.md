@@ -27,8 +27,9 @@ The initial UML is a class diagram with 8 objects (6 core MVP + 2 stretch goal).
 
 **b. Design changes**
 
-- Did your design change during implementation?
-- If yes, describe at least one change and why you made it.
+Yes — one notable change was how `Task.reset()` handles the `days_deferred` field. The original design only reset `status` back to `PENDING`, but during implementation we realized that recurring tasks (like daily feeding) generate a fresh instance each day, so carrying over `days_deferred` from yesterday's completed task would incorrectly inflate the scheduler's priority score. We added `self.days_deferred = 0` to `reset()` so recurring tasks start clean each cycle, while one-off deferred tasks naturally keep their accumulated deferral count since they never call `reset()`.
+
+Another change was in the `Scheduler.generate_plan()` method. The original skeleton assumed the plan would reference the actual `User` object, but the scheduler operates on a list of pets and availability windows — it doesn't need a full user context. Rather than forcing a user dependency into the scheduling engine, we create a lightweight placeholder owner (`user_id=0, username="system"`) for the generated plan. This keeps the Scheduler decoupled from User, making it easier to test and reuse independently.
 
 ---
 

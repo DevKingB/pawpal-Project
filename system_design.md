@@ -76,6 +76,42 @@ When multiple pets have tasks competing for the same time windows, the Scheduler
 
 ## 5. DailyPlan Flow
 
+### Unified Plan Model
+
+The scheduler produces a **single DailyPlan per user per day** that combines tasks from **all** pets. Tasks from different pets are interleaved by priority score, not grouped by pet. For example, a user with a dog and a cat gets one plan:
+
+```
+8:00 — Feed Rex (dog, 10 min, HIGH)
+8:10 — Feed Whiskers (cat, 10 min, HIGH)
+8:20 — Walk Rex (dog, 30 min, HIGH)
+8:50 — Clean litter box (cat, 10 min, HIGH)
+9:00 — Play with Whiskers (cat, 15 min, MEDIUM)
+```
+
+**Why unified over per-pet plans:**
+
+| Approach | Pros | Cons |
+|---|---|---|
+| **One plan, all pets** | Optimizes globally — highest priority task goes first regardless of pet. Simpler for user to follow one timeline. | Tasks from different pets are mixed together. |
+| **Separate plan per pet** | Clear per-pet view. | Can't optimize across pets. User juggles multiple schedules. Two HIGH tasks from different pets might conflict with no resolution. |
+
+**Decision: Unified plan.** The scheduler's job is to optimize the *user's time*, not individual pets' schedules. The UI can filter by `pet_id` if a per-pet view is wanted:
+```python
+rex_tasks = [t for t in plan.scheduled_tasks if t.pet_id == rex.pet_id]
+```
+
+### Scheduler Decoupling from User
+
+The `Scheduler.generate_plan()` method accepts `pets: list[Pet]` and `availability: list[TimeWindow]` as raw inputs rather than a `User` object. This was an intentional design change:
+
+- **Testability** — Tests can pass pets and windows directly without constructing a full User with credentials, email, etc.
+- **Reusability** — The scheduler could work for any source of tasks, not just User-owned pets.
+- **Separation of concerns** — The Scheduler's job is "fit tasks into time." It doesn't need to know about authentication, usernames, or emails.
+
+The tradeoff is that `DailyPlan.owner` receives a placeholder User (`user_id=0, username="system"`). The real owner is assigned by the application layer when connecting the plan to the logged-in user.
+
+### Plan Lifecycle
+
 The schedule is a **guide, not a lock.** The user always retains freedom to deviate.
 
 1. **Generate** — User hits "Plan My Day." Scheduler pulls all recurring + one-off tasks across all pets, fits them into available time windows, produces a **draft** with per-task reasoning.
@@ -99,7 +135,10 @@ When tasks are not completed by end of day:
 |---|---|---|
 | **High / Medium** | **Recurring** (daily/weekly) | **Do not carry over.** The miss is logged (happiness penalty, broken streak), but tomorrow already has a fresh auto-generated instance. No duplication. |
 | **High / Medium** | **One-off** | **Carry over** to tomorrow's plan with a priority boost. These won't auto-regenerate, so they'd be lost otherwise. Multi-day deferrals trigger escalation warnings (e.g., "Flea medication deferred 2 days — needs immediate attention"). |
-| **Low** | Any | Move to a persistent **Backlog** (separate section). Not auto-scheduled. Completable anytime for reduced reward points. Never forced into the daily plan. Cleared after 3 days. |
+| **Low** | **Recurring** (daily/weekly) | The missed *instance* moves to **Backlog** and decays over 3 days (50% → 25% → cleared). However, the task itself **auto-regenerates** on its next scheduled cycle — the user doesn't lose the task permanently, just that specific occurrence's reward points. |
+| **Low** | **One-off** | Moves to **Backlog**. If not completed within 3 days, it is **cleared entirely**. The user must manually re-add it if they still want it. This is intentional — if users forget about a low-priority one-off, it's on them. |
+
+**Key distinction:** "Cleared after 3 days" means the *backlog entry* is removed, not that a recurring task stops existing. Recurring tasks always produce a fresh instance on their next frequency cycle regardless of whether the previous one was completed.
 
 This split eliminates duplication: recurring tasks always exist exactly once per scheduled day, and one-off tasks persist until completed or escalated.
 

@@ -149,6 +149,10 @@ class Task:
 
     def mark_missed(self) -> None:
         """Set status to MISSED and increment days_deferred."""
+        # TODO #12b: This method exists but is never called by app.py.
+        # Needs an end-of-day trigger (button or automatic) to mark
+        # uncompleted scheduled tasks as MISSED. Only MISSED increments
+        # days_deferred — SKIPPED and DEFERRED do not (Section 12 rules).
         self.status = TaskStatus.MISSED
         self.days_deferred += 1
 
@@ -162,6 +166,9 @@ class Task:
 
     def reset(self) -> None:
         """Reset status to PENDING for the next recurrence cycle."""
+        # TODO #12a: Currently only called manually. Needs to be wired into
+        # plan generation so tasks start fresh each day. Also need 7-day TTL
+        # tracking for skipped one-off tasks (Section 12 rules).
         self.status = TaskStatus.PENDING
         self.days_deferred = 0
 
@@ -365,6 +372,12 @@ class Scheduler:
                 time_used += task.duration
             else:
                 # Doesn't fit — route by priority
+                # TODO #12a: Deferred/backlog lists are display-only.
+                # Per Section 12 finalized rules:
+                #   - Do NOT increment days_deferred here (not user's fault)
+                #   - Track consecutive deferral count per task
+                #   - Alert user if same task deferred 3+ consecutive gens
+                #   - Carry-over follows same matrix as MISSED but no penalty
                 if task.priority == Priority.LOW:
                     backlog.append(task)
                 else:
@@ -385,6 +398,9 @@ class Scheduler:
 
     def _score_task(self, task: Task) -> float:
         """Calculate the composite score for a single task."""
+        # TODO #12a: days_deferred only increments on MISSED (not on
+        # scheduler-deferred or skipped). Scoring formula is correct,
+        # but the input (days_deferred) is never updated by the app yet.
         priority_weights = {
             Priority.HIGH: 3.0,
             Priority.MEDIUM: 2.0,

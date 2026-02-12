@@ -272,3 +272,117 @@ Reminder ──(references)──► Task
 | Time handling | Local time via `datetime.now()` | MVP |
 | Feedback animations | Generic positive/negative responses | MVP |
 | Custom feedback | Tailored responses using pet name + category context | Future |
+
+---
+
+## 12. Design Gap: Cross-Day Task Lifecycle (TODO)
+
+### Problem Statement
+
+Sections 5 and 6 describe a rich cross-day task lifecycle — deferred tasks carry over with priority boosts, `days_deferred` increments to boost scoring, backlog items decay over 3 days, and the scheduler prevents recurring task duplication. **The current implementation does not wire any of this up.**
+
+### What the Design Says vs. What the Code Does
+
+| Design Intent (Sections 5–7) | Current Implementation | Gap |
+|---|---|---|
+| `days_deferred` increments when a task is missed, boosting its score next generation | `days_deferred` is never incremented outside of `mark_missed()`, which is never called by the app | **No cross-day scoring boost** |
+| High/Med one-off deferred tasks carry over to tomorrow | Scheduler pulls fresh from Pet.tasks each time — no carry-over logic; deferred list is display-only | **Deferred list is informational, not functional** |
+| High/Med recurring missed tasks log the miss but don't duplicate (fresh instance auto-generates) | No end-of-day process to mark tasks MISSED; no auto-regeneration of recurring task instances | **No end-of-day lifecycle** |
+| Low-priority backlog decays over 3 days (50% → 25% → cleared) | Backlog list is display-only; no day-tracking, no decay, no clearing | **Backlog decay not implemented** |
+| Duplicate prevention: recurring tasks exist exactly once per scheduled day | Scheduler collects all Pet.tasks including already-scheduled ones; no instance management | **No task instance vs. task template distinction** |
+
+### Root Cause
+
+The current architecture uses **persistent Task objects on Pet** as both the task *template* (definition) and the task *instance* (today's scheduled occurrence). The design in Section 6 implicitly assumes a **template → instance** model where:
+
+- The **template** lives on Pet forever (e.g., "Walk — daily, 30min, high")
+- Each plan generation creates a fresh **instance** for today
+- Instances track their own status (PENDING → COMPLETED / MISSED / SKIPPED)
+- `days_deferred` lives on the template to influence future instance scoring
+- Recurring templates auto-generate new instances on their frequency cycle
+
+Without this split, there's no way to:
+1. Mark yesterday's *instance* as MISSED without corrupting the *template*
+2. Prevent the same template from producing duplicate instances in tomorrow's plan
+3. Track backlog decay (which day is this instance on?)
+4. Reset task status for a new day while preserving the accumulated `days_deferred`
+
+---
+
+### Finalized Cross-Day Lifecycle Rules
+
+#### Task End-State Definitions
+
+| End State | How it happens | User's fault? |
+|---|---|---|
+| **COMPLETED** | User clicked Done | N/A (good) |
+| **SKIPPED** | User clicked "Skip — not today" | No — intentional |
+| **MISSED** | Scheduled but user never acted by end-of-day | Yes — forgot/neglected |
+| **DEFERRED** | Scheduler couldn't fit it (med/high priority) | No — system limitation |
+| **BACKLOG** | Scheduler couldn't fit it (low priority) | No — system limitation |
+
+#### `days_deferred` Rules
+
+| End State | Increment `days_deferred`? | Reasoning |
+|---|---|---|
+| **COMPLETED** | Reset to 0 | Done. Clean slate. |
+| **SKIPPED** | No change | User acknowledged it. No penalty, no boost. Intentional defer. |
+| **MISSED** | +1 | User failed to act. Task needs to bubble up tomorrow so it doesn't keep getting ignored. |
+| **DEFERRED** (scheduler) | No change | Not user's fault — system capacity limitation. Task re-evaluated tomorrow at same priority. |
+| **BACKLOG** (scheduler) | No change | Same as deferred — system decision, not user's. |
+
+**Scheduler-deferred escalation:** If the same task is deferred by the scheduler for 3+ consecutive plan generations, surface an alert: *"'Flea medication' has been unable to fit in your schedule for 3 days. Consider adjusting your availability or removing lower-priority tasks."* This keeps scoring clean while surfacing capacity problems to the user.
+
+#### Cross-Day Carry-Over Matrix
+
+| Yesterday's State | Task Type | Tomorrow's Behavior | Penalty? |
+|---|---|---|---|
+| **COMPLETED** | Recurring | Fresh instance auto-generated on next cycle | None |
+| **COMPLETED** | One-off | Task is done. Remove from Pet or mark permanently complete. | None |
+| **SKIPPED** | Recurring | Fresh instance on next cycle. Skipped instance disappears. | None |
+| **SKIPPED** | One-off | Stays in pool, re-evaluated by scheduler. **7-day TTL** — cleared after 7 days of being skipped. User must re-add manually if still wanted. | None |
+| **MISSED** | Recurring (high/med) | Miss logged (happiness penalty, broken streak). Fresh instance auto-generates. No carry-over (prevents duplication). | Yes — penalty + streak break |
+| **MISSED** | Recurring (low) | Instance moves to backlog with 3-day decay. Fresh instance still auto-generates on next cycle. | Yes — penalty |
+| **MISSED** | One-off (high/med) | Carries over with priority boost (`days_deferred` +1). Escalation warning if multi-day. | Yes — penalty + streak break |
+| **MISSED** | One-off (low) | Moves to backlog. Cleared after 3 days if not completed. | Yes — penalty |
+| **DEFERRED** | Any | Same carry-over rules as MISSED but **without any penalty**. No happiness hit, no broken streak. Just re-evaluated tomorrow. | None |
+
+#### Backlog Decay (unchanged from Section 7)
+
+| Day in Backlog | Reward if Completed | Notes |
+|---|---|---|
+| Day 1 | 50% points | Still recent — worth catching up |
+| Day 2 | 25% points | Last meaningful incentive |
+| Day 3 | 0% — cleared from backlog | Entry removed. Recurring tasks still auto-regenerate on next cycle. |
+
+#### Double-Dip Ruling
+
+When a recurring task is MISSED and a fresh instance is generated, both the backlog entry (decaying points) and the fresh instance (full points) exist simultaneously. The user can complete both and earn points from each. **This is allowed for MVP.**
+
+Rationale:
+- The user DID miss Monday — the happiness penalty and broken streak already happened. The backlog recovery is a consolation prize, not a bonus.
+- The user DID complete Tuesday — that's a legitimate full-value completion.
+- The exploit is self-limiting: backlog decays over 3 days (50% → 25% → 0%). Max theoretical double-dip is 150% → 125% → 100% over 3 days.
+- Future optimization: auto-clear backlog copies of a template when its fresh instance is completed. One line of logic, not worth the complexity for MVP.
+
+---
+
+### Proposed Solution (TODO)
+
+**Phase 1 — Minimal viable cross-day support (no data model changes):**
+- On MISSED (end-of-day): call `task.mark_missed()` to increment `days_deferred`
+- On Generate Plan: reset all task statuses to PENDING (new day = fresh start)
+- On Skip: set status to SKIPPED, do NOT increment `days_deferred`
+- Add 3+ consecutive deferral alert in plan UI
+- Add 7-day TTL tracking for skipped one-off tasks
+- This gives us working `days_deferred` boosting for missed tasks without restructuring
+
+**Phase 2 — Full template/instance model (future, with SQLite):**
+- Introduce `TaskTemplate` (lives on Pet) and `TaskInstance` (lives on DailyPlan)
+- Scheduler creates instances from templates each generation
+- Instances track per-day status; templates track `days_deferred` and frequency
+- Backlog decay tracks instance age (day counter)
+- End-of-day process: review plan, mark uncompleted instances as MISSED, update template `days_deferred`
+- Auto-clear backlog copies when fresh instance is completed (eliminates double-dip)
+
+Phase 1 is achievable without restructuring the data model. Phase 2 requires the template/instance split and likely coincides with SQLite persistence.

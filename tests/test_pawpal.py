@@ -560,7 +560,7 @@ class TestScheduler:
 # UI-only fixes (BUG #1, #4, #7) are verified via live Streamlit testing.
 
 class TestBugFixRegressions:
-    """Regression tests for the 9 bug fixes in bugfix/ui-fixes."""
+    """Regression tests for the 7 verified bug fixes in bugfix/ui-fixes."""
 
     # ── BUG #17: Plan carries across users ──────────────
     # Backend guarantee: separate User objects have independent pets and state.

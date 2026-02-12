@@ -31,9 +31,8 @@ st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
 def init_session_state():
     """Initialize session state with default values if not already set."""
-    # BUG #17: current_plan, next_task_id, next_pet_id are never cleared on
-    # register/login, so a new user inherits the previous user's daily plan.
-    # Fix: clear all user-specific state when switching accounts.
+    # FIX BUG #17: user-specific state (current_plan, next_task_id,
+    # next_pet_id) is now cleared in register and login handlers.
     if "user" not in st.session_state:
         st.session_state.user = None
     if "scheduler" not in st.session_state:
@@ -44,6 +43,10 @@ def init_session_state():
         st.session_state.next_task_id = 1
     if "next_pet_id" not in st.session_state:
         st.session_state.next_pet_id = 1
+    if "pet_form_counter" not in st.session_state:
+        st.session_state.pet_form_counter = 0
+    if "task_form_counter" not in st.session_state:
+        st.session_state.task_form_counter = 0
     if "page" not in st.session_state:
         st.session_state.page = "login"
 
@@ -86,15 +89,24 @@ def render_login_page():
             submitted = st.form_submit_button("Register")
 
             if submitted:
-                # BUG #3: Pressing Enter in any field submits the form.
-                # Tighten validation to catch empty/whitespace-only names.
+                # FIX BUG #3: Strip whitespace to reject blank-only inputs
+                reg_username = reg_username.strip()
+                reg_email = reg_email.strip()
+                reg_password = reg_password.strip()
+                reg_confirm = reg_confirm.strip()
                 if not reg_username or not reg_email or not reg_password:
                     st.error("All fields are required.")
                 elif reg_password != reg_confirm:
                     st.error("Passwords do not match.")
                 else:
-                    # BUG #17: Must clear user-specific session state before
+                    # FIX BUG #17: Clear all user-specific state before
                     # creating a new user so old plan/pets don't carry over.
+                    st.session_state.current_plan = None
+                    st.session_state.next_task_id = 1
+                    st.session_state.next_pet_id = 1
+                    st.session_state.pet_form_counter = 0
+                    st.session_state.task_form_counter = 0
+
                     user = User(
                         user_id=1,
                         username=reg_username,
@@ -116,8 +128,9 @@ def render_login_page():
             if submitted:
                 user = st.session_state.user
                 if user and user.username == login_username and user.authenticate(login_password):
-                    # BUG #17: On login, clear plan state so stale data from
-                    # another session doesn't bleed through.
+                    # FIX BUG #17: Clear plan state on login so stale data
+                    # from a previous session doesn't bleed through.
+                    st.session_state.current_plan = None
                     st.session_state.page = "dashboard"
                     st.success(f"Welcome back, {login_username}!")
                     st.rerun()
@@ -215,14 +228,13 @@ def render_pets_page():
     user = get_user()
     st.title("🐕 My Pets")
 
-    # BUG #1: Streamlit remembers widget values by key across reruns.
-    # After adding a pet, the form fields retain previous input.
-    # Fix: use unique form keys or clear widget state after submission.
+    # FIX BUG #1: Counter-based form key forces Streamlit to create a fresh
+    # form after each submission, clearing all widget values.
     #
-    # BUG #3: Enter key submits form. Default numeric values (age=1, weight=5.0)
-    # make accidental submissions look successful. Tighten validation.
+    # FIX BUG #3: Whitespace-only pet name is now rejected.
+    form_key = f"add_pet_form_{st.session_state.pet_form_counter}"
     with st.expander("➕ Add a New Pet", expanded=not user.pets):
-        with st.form("add_pet_form"):
+        with st.form(form_key):
             pet_name = st.text_input("Pet Name")
             category = st.selectbox("Species", [c.value for c in PetCategory])
             col1, col2 = st.columns(2)
@@ -235,6 +247,8 @@ def render_pets_page():
             submitted = st.form_submit_button("Add Pet")
 
             if submitted:
+                # FIX BUG #3: Strip whitespace to catch blank/space-only names
+                pet_name = pet_name.strip()
                 if not pet_name:
                     st.error("Pet name is required.")
                 else:
@@ -249,7 +263,8 @@ def render_pets_page():
                     )
                     user.add_pet(pet)
                     st.session_state.next_pet_id += 1
-                    st.success(f"Added {pet_name} the {category}!")
+                    # FIX BUG #4: toast() survives rerun as an overlay
+                    st.toast(f"Added {pet_name} the {category}! 🐾")
 
                     # Auto-populate default tasks for the pet's category
                     defaults = pet.category.get_default_tasks()
@@ -266,9 +281,9 @@ def render_pets_page():
                         pet.add_task(task)
                         st.session_state.next_task_id += 1
                     if defaults:
-                        st.info(f"Auto-added {len(defaults)} default {category} tasks.")
-                    # BUG #1: st.rerun() preserves widget state — form fields
-                    # will show the last pet's info on next render.
+                        st.toast(f"Auto-added {len(defaults)} default {category} tasks.")
+                    # FIX BUG #1: Bump counter so next render creates a fresh form
+                    st.session_state.pet_form_counter += 1
                     st.rerun()
 
     # Display existing pets
@@ -322,7 +337,9 @@ def render_add_task_page():
             st.rerun()
         return
 
-    with st.form("add_task_form"):
+    # FIX BUG #1 (Add Task form): Counter-based key clears fields after submit
+    task_form_key = f"add_task_form_{st.session_state.task_form_counter}"
+    with st.form(task_form_key):
         pet_options = {f"{p.name} ({p.category.value})": p for p in user.pets}
         selected_pet_label = st.selectbox("Assign to Pet", list(pet_options.keys()))
         selected_pet = pet_options[selected_pet_label]
@@ -340,28 +357,34 @@ def render_add_task_page():
         submitted = st.form_submit_button("Add Task")
 
         if submitted:
+            # FIX BUG #3: Strip whitespace to catch blank/space-only names
+            task_name = task_name.strip()
             if not task_name:
                 st.error("Task name is required.")
             else:
-                # BUG #5: No duplicate detection. User can spam identical tasks.
-                # Fix: check if task with same name already exists on this pet
-                # and warn before allowing override.
-                task = Task(
-                    task_id=st.session_state.next_task_id,
-                    name=task_name,
-                    description=description,
-                    duration=int(duration),
-                    priority=Priority(priority),
-                    frequency=Frequency(frequency),
-                    pet_id=selected_pet.pet_id,
-                )
-                selected_pet.add_task(task)
-                st.session_state.next_task_id += 1
-                # BUG #4: st.success() then st.rerun() — the success message
-                # is wiped before user sees it. Use st.toast() or redirect to
-                # pet's task list for visible confirmation.
-                st.success(f"Added **{task_name}** to {selected_pet.name}!")
-                st.rerun()
+                # FIX BUG #5: Check for duplicate task name on the same pet
+                # Note: Duplicate detection is intentionally case-insensitive (using .lower())
+                # to treat "Walk" and "walk" as the same task for a given pet, while still
+                # storing and displaying the task name with the user's original casing.
+                existing_names = [t.name.lower() for t in selected_pet.tasks]
+                if task_name.lower() in existing_names:
+                    st.error(f"**{selected_pet.name}** already has a task named \"{task_name}\". Use a different name or edit the existing task.")
+                else:
+                    task = Task(
+                        task_id=st.session_state.next_task_id,
+                        name=task_name,
+                        description=description,
+                        duration=int(duration),
+                        priority=Priority(priority),
+                        frequency=Frequency(frequency),
+                        pet_id=selected_pet.pet_id,
+                    )
+                    selected_pet.add_task(task)
+                    st.session_state.next_task_id += 1
+                    # FIX BUG #4: toast() survives rerun as an overlay
+                    st.toast(f"Added {task_name} to {selected_pet.name}! ✅")
+                    st.session_state.task_form_counter += 1
+                    st.rerun()
 
 
 # ──────────────────────────────────────────────
@@ -396,9 +419,8 @@ def render_availability_page():
                 st.write("")
                 if st.button("Add", key=f"{day}_add"):
                     if end_time <= start_time:
-                        # BUG #7: Inline st.error() expands the component.
-                        # Fix: use st.toast() for non-intrusive overlay feedback.
-                        st.error("End time must be after start time.")
+                        # FIX BUG #7: toast() avoids expanding the component
+                        st.toast("⚠️ End time must be after start time.")
                     else:
                         window = TimeWindow(start=start_time, end=end_time)
                         current = user.availability.get(day, [])
@@ -469,15 +491,9 @@ def render_plan_page():
     st.markdown(status_label)
     st.progress(pct / 100, text=f"{pct:.0f}% complete")
 
-    # BUG #11 / #8 / #10: DRAFT vs ACCEPTED flow is broken.
-    # Current problems:
-    #   - Done/Skip buttons appear in DRAFT (should only appear in ACCEPTED)
-    #   - Regenerate is available in ACCEPTED (wipes completed task progress)
-    #   - Skip gives no feedback about what it means
-    # Correct flow:
-    #   DRAFT  → [View, Remove Task from plan, Regenerate, Accept]
-    #   ACCEPTED → [Done, Skip ("not today, no penalty")]. Plan is locked.
-    # Fix: gate action buttons by plan.status. Remove Regenerate from ACCEPTED.
+    # FIX BUG #11 / #8 / #10: DRAFT vs ACCEPTED flow corrected.
+    # DRAFT  → [View tasks, Regenerate, Accept]
+    # ACCEPTED → [Done, Skip ("not today, no penalty")]. Plan locked.
 
     # Accept plan if still draft
     if plan.status == PlanStatus.DRAFT:
@@ -501,27 +517,32 @@ def render_plan_page():
             with st.container(border=True):
                 col1, col2, col3 = st.columns([4, 1, 1])
                 with col1:
-                    icon = "✅" if task.status == TaskStatus.COMPLETED else "⏳"
+                    # FIX BUG #8: Visual distinction for each task state
+                    if task.status == TaskStatus.COMPLETED:
+                        icon = "✅"
+                    elif task.status == TaskStatus.SKIPPED:
+                        icon = "⏭️"
+                    else:
+                        icon = "⏳"
                     pet_name = next((p.name for p in user.pets if p.pet_id == task.pet_id), "Unknown")
                     st.markdown(f"{icon} **{task.name}** — {pet_name}")
                     st.caption(f"{task.duration}min | {task.priority.value} | {task.frequency.value}")
                     if task.task_id in plan.explanation:
                         st.caption(f"💡 {plan.explanation[task.task_id]}")
+                    # FIX BUG #8: Show skip reason inline
+                    if task.status == TaskStatus.SKIPPED:
+                        st.caption("⏭️ Skipped — not today, no penalty")
                 with col2:
-                    # BUG #11: These buttons should only render when
-                    # plan.status == PlanStatus.ACCEPTED, not DRAFT.
-                    if task.status == TaskStatus.PENDING:
+                    # FIX BUG #11: Only show Done when plan is ACCEPTED
+                    if plan.status == PlanStatus.ACCEPTED and task.status == TaskStatus.PENDING:
                         if st.button("Done", key=f"complete_{task.task_id}"):
                             task.mark_complete()
                             st.rerun()
                 with col3:
-                    # BUG #8: Skip sets SKIPPED but gives no user feedback.
-                    # Fix: label as "Skip — not today (no penalty)". Do NOT
-                    # increment days_deferred (per Section 12 finalized rules).
-                    # Show visual distinction for skipped tasks.
-                    # Also gate behind ACCEPTED status like Done (BUG #11).
-                    if task.status == TaskStatus.PENDING:
-                        if st.button("Skip", key=f"skip_{task.task_id}"):
+                    # FIX BUG #11 + #8: Only show Skip when plan ACCEPTED;
+                    # label clarifies "no penalty" per Section 12 rules.
+                    if plan.status == PlanStatus.ACCEPTED and task.status == TaskStatus.PENDING:
+                        if st.button("Skip", key=f"skip_{task.task_id}", help="Not today — no penalty"):
                             task.status = TaskStatus.SKIPPED
                             st.rerun()
     else:

@@ -104,6 +104,8 @@ def render_login_page():
                     st.session_state.current_plan = None
                     st.session_state.next_task_id = 1
                     st.session_state.next_pet_id = 1
+                    st.session_state.pet_form_counter = 0
+                    st.session_state.task_form_counter = 0
 
                     user = User(
                         user_id=1,

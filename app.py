@@ -363,6 +363,9 @@ def render_add_task_page():
                 st.error("Task name is required.")
             else:
                 # FIX BUG #5: Check for duplicate task name on the same pet
+                # Note: Duplicate detection is intentionally case-insensitive (using .lower())
+                # to treat "Walk" and "walk" as the same task for a given pet, while still
+                # storing and displaying the task name with the user's original casing.
                 existing_names = [t.name.lower() for t in selected_pet.tasks]
                 if task_name.lower() in existing_names:
                     st.error(f"**{selected_pet.name}** already has a task named \"{task_name}\". Use a different name or edit the existing task.")

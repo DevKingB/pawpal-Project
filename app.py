@@ -92,6 +92,8 @@ def render_login_page():
                 # FIX BUG #3: Strip whitespace to reject blank-only inputs
                 reg_username = reg_username.strip()
                 reg_email = reg_email.strip()
+                reg_password = reg_password.strip()
+                reg_confirm = reg_confirm.strip()
                 if not reg_username or not reg_email or not reg_password:
                     st.error("All fields are required.")
                 elif reg_password != reg_confirm:

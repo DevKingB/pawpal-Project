@@ -287,6 +287,7 @@ def render_pets_page():
     """Render the pet management page."""
     user = get_user()
     st.title("🐕 My Pets")
+    show_success_message()
 
     # FIX BUG #1: Counter-based form key forces Streamlit to create a fresh
     # form after each submission, clearing all widget values.
@@ -323,8 +324,8 @@ def render_pets_page():
                     )
                     user.add_pet(pet)
                     st.session_state.next_pet_id += 1
-                    # FIX BUG #4: toast() survives rerun as an overlay
-                    st.toast(f"Added {pet_name} the {category}! 🐾")
+                    # FIX BUG #4: Set message flag — displayed on next render
+                    st.session_state.success_message = f"Added {pet_name} the {category}! 🐾"
 
                     # Auto-populate default tasks for the pet's category
                     defaults = pet.category.get_default_tasks()
@@ -341,7 +342,7 @@ def render_pets_page():
                         pet.add_task(task)
                         st.session_state.next_task_id += 1
                     if defaults:
-                        st.toast(f"Auto-added {len(defaults)} default {category} tasks.")
+                        st.session_state.success_message = f"Added {pet_name} the {category} with {len(defaults)} default tasks! 🐾"
                     # FIX BUG #1: Bump counter so next render creates a fresh form
                     st.session_state.pet_form_counter += 1
                     st.rerun()
@@ -389,6 +390,7 @@ def render_add_task_page():
     """Render the task creation page."""
     user = get_user()
     st.title("📝 Add Task")
+    show_success_message()
 
     if not user.pets:
         st.warning("You need to add a pet first before creating tasks.")
@@ -441,8 +443,8 @@ def render_add_task_page():
                     )
                     selected_pet.add_task(task)
                     st.session_state.next_task_id += 1
-                    # FIX BUG #4: toast() survives rerun as an overlay
-                    st.toast(f"Added {task_name} to {selected_pet.name}! ✅")
+                    # FIX BUG #4: Set message flag — displayed on next render
+                    st.session_state.success_message = f"Added {task_name} to {selected_pet.name}! ✅"
                     st.session_state.task_form_counter += 1
                     st.rerun()
 

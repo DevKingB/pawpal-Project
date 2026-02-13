@@ -32,10 +32,10 @@ st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 
 def init_session_state():
     """Initialize session state with default values if not already set."""
-    # FIX BUG #17: user-specific state (current_plan, next_task_id,
-    # next_pet_id) is now cleared in register and login handlers.
     if "user" not in st.session_state:
         st.session_state.user = None
+    if "user_registry" not in st.session_state:
+        st.session_state.user_registry = {}
     if "scheduler" not in st.session_state:
         st.session_state.scheduler = Scheduler()
     if "current_plan" not in st.session_state:
@@ -139,7 +139,6 @@ def render_login_page():
             submitted = st.form_submit_button("Register")
 
             if submitted:
-                # FIX BUG #3: Strip whitespace to reject blank-only inputs
                 reg_username = reg_username.strip()
                 reg_email = reg_email.strip()
                 reg_password = reg_password.strip()
@@ -148,21 +147,24 @@ def render_login_page():
                     st.error("All fields are required.")
                 elif reg_password != reg_confirm:
                     st.error("Passwords do not match.")
+                elif reg_username in st.session_state.user_registry:
+                    st.error("Username already taken. Choose a different one.")
                 else:
-                    # FIX BUG #17: Clear all user-specific state before
-                    # creating a new user so old plan/pets don't carry over.
                     st.session_state.current_plan = None
+                    st.session_state.availability_changed = False  # BUG C: Reset flag
                     st.session_state.next_task_id = 1
                     st.session_state.next_pet_id = 1
                     st.session_state.pet_form_counter = 0
                     st.session_state.task_form_counter = 0
 
                     user = User(
-                        user_id=1,
+                        user_id=len(st.session_state.user_registry) + 1,
                         username=reg_username,
                         email=reg_email,
                         password_hash=hash_password(reg_password),
                     )
+                    # FIX BUG D: Store user in registry for login persistence
+                    st.session_state.user_registry[reg_username] = user
                     st.session_state.user = user
                     st.session_state.page = "dashboard"
                     st.success(f"Welcome, {reg_username}! Account created.")
@@ -176,10 +178,13 @@ def render_login_page():
             submitted = st.form_submit_button("Login")
 
             if submitted:
-                user = st.session_state.user
-                if user and user.username == login_username and user.authenticate(login_password):
-                    # FIX BUG #17: Clear plan state on login so stale data
-                    # from a previous session doesn't bleed through.
+                login_username = login_username.strip()
+                login_password = login_password.strip()
+                # FIX BUG D: Look up user from registry, not session_state.user
+                registry = st.session_state.user_registry
+                stored_user = registry.get(login_username)
+                if stored_user and stored_user.authenticate(login_password):
+                    st.session_state.user = stored_user
                     st.session_state.current_plan = None
                     st.session_state.page = "dashboard"
                     st.success(f"Welcome back, {login_username}!")
@@ -218,6 +223,11 @@ def render_sidebar():
 
         st.divider()
         if st.button("🚪 Logout", use_container_width=True):
+            st.session_state.user = None
+            st.session_state.current_plan = None
+            st.session_state.availability_changed = False  # BUG C: Reset flag
+            st.session_state.pet_form_counter = 0
+            st.session_state.task_form_counter = 0
             st.session_state.page = "login"
             st.rerun()
 

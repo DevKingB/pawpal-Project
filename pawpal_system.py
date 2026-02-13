@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from enum import Enum
-from typing import Optional
+from typing import Optional, Iterable, Tuple, List
 
 
 # ──────────────────────────────────────────────

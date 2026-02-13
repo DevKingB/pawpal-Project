@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from enum import Enum
-from typing import Optional
+from typing import Optional, Iterable, Tuple, List
 
 
 # ──────────────────────────────────────────────
@@ -116,7 +116,7 @@ class PlanStatus(Enum):
 @dataclass
 class TimeWindow:
     """A single block of available time (e.g., 08:00–09:00)."""
-
+    day_of_week: str
     start: time
     end: time
 
@@ -295,10 +295,10 @@ class DailyPlan:
         task_map = {t.task_id: t for t in self.scheduled_tasks}
         self.scheduled_tasks = [task_map[tid] for tid in new_order if tid in task_map]
 
-    def regenerate(self, new_availability: list[TimeWindow]) -> DailyPlan:
-        """Re-run the Scheduler on remaining incomplete tasks with updated windows."""
-        # TODO: implement — delegate to Scheduler
-        pass
+    # def regenerate(self, new_availability: list[TimeWindow]) -> DailyPlan:
+    #     """Re-run the Scheduler on remaining incomplete tasks with updated windows."""
+    #     # TODO: implement — delegate to Scheduler
+    #     pass
 
     def get_next_task(self) -> Optional[Task]:
         """Return the next pending task in the schedule."""
@@ -427,61 +427,84 @@ class Scheduler:
         return conflicts
 
 
-# ──────────────────────────────────────────────
-# Stretch Goal Classes
-# ──────────────────────────────────────────────
+def regenerate_plan_system(
+    scheduler: Scheduler,
+    pets: Iterable[Pet],
+    windows: Optional[Iterable[TimeWindow]],
+    existing_plan: DailyPlan,
+) -> Tuple[DailyPlan, str]:
+    """
+    Re-run scheduler but preserve completed/skipped task statuses.
+    Returns (new_plan, summary_message).
+    """
+    pets_list: List[Pet] = list(pets or [])
+    windows_list: List[TimeWindow] = list(windows or [])
 
-@dataclass
-class RewardSystem:
-    """Tracks streaks, badges, and pet happiness (stretch goal)."""
+    # Snapshot finished statuses from existing plan (scheduled + deferred + backlog)
+    finished = {}
+    existing_tasks = []
+    if hasattr(existing_plan, "scheduled_tasks"):
+        existing_tasks.extend(existing_plan.scheduled_tasks)
+    if hasattr(existing_plan, "deferred_tasks"):
+        existing_tasks.extend(existing_plan.deferred_tasks)
+    if hasattr(existing_plan, "backlog"):
+        existing_tasks.extend(existing_plan.backlog)
+    for t in existing_tasks:
+        if t.status in (TaskStatus.COMPLETED, TaskStatus.SKIPPED):
+            finished[t.task_id] = t.status
 
-    streaks: dict[str, int] = field(default_factory=dict)
-    # streaks format: {"feeding": 5, "walking": 3}
-    badges: list[str] = field(default_factory=list)
-    happiness_score: dict[int, float] = field(default_factory=dict)
-    # happiness_score format: {pet_id: 85.0}
-    total_points: int = 0
+    # Run scheduler
+    new_plan = scheduler.generate_plan(pets_list, windows_list)
 
-    def award_completion(self, task: Task, timing_tier: str) -> None:
-        """
-        Award points based on when the task was completed.
+    # If some finished tasks were removed by the scheduler, restore them from the existing plan
+    existing_map = {t.task_id: t for t in existing_tasks}
+    # build set of task ids present in new_plan
+    present_ids = set()
+    if hasattr(new_plan, "scheduled_tasks"):
+        present_ids.update(t.task_id for t in new_plan.scheduled_tasks)
+    if hasattr(new_plan, "deferred_tasks"):
+        present_ids.update(t.task_id for t in new_plan.deferred_tasks)
+    if hasattr(new_plan, "backlog"):
+        present_ids.update(t.task_id for t in new_plan.backlog)
 
-        Tiers: 'on_time' (100%), 'same_day_late' (75%),
-               'backlog_day1' (50%), 'backlog_day2' (25%).
-        """
-        # TODO: implement tiered reward logic
-        pass
+    # For any finished task that isn't present, re-insert it into scheduled_tasks (preserve status)
+    for tid, status in finished.items():
+        if tid not in present_ids and tid in existing_map:
+            restored = existing_map[tid]
+            restored.status = status
+            if not hasattr(new_plan, "scheduled_tasks"):
+                new_plan.scheduled_tasks = []
+            new_plan.scheduled_tasks.append(restored)
+            present_ids.add(tid)
 
-    def penalize_miss(self, task: Task) -> None:
-        """Apply a happiness penalty for a missed task."""
-        # TODO: implement
-        pass
+    # Restore finished statuses
+    new_tasks = []
+    if hasattr(new_plan, "scheduled_tasks"):
+        new_tasks.extend(new_plan.scheduled_tasks)
+    if hasattr(new_plan, "deferred_tasks"):
+        new_tasks.extend(new_plan.deferred_tasks)
+    if hasattr(new_plan, "backlog"):
+        new_tasks.extend(new_plan.backlog)
+    for t in new_tasks:
+        if t.task_id in finished:
+            t.status = finished[t.task_id]
 
-    def get_streak(self, task_name: str) -> int:
-        """Return the current streak count for a given task type."""
-        # TODO: implement
-        pass
+    # Preserve original plan status
+    new_plan.status = existing_plan.status
 
-    def get_happiness(self, pet_id: int) -> float:
-        """Return the happiness score for a specific pet."""
-        # TODO: implement
-        pass
+    old_ids = {t.task_id for t in existing_tasks}
+    new_ids = {t.task_id for t in new_tasks}
+    newly_added = new_ids - old_ids
+    removed = old_ids - new_ids
 
+    parts = []
+    if newly_added:
+        parts.append(f"{len(newly_added)} deferred task(s) now fit")
+    if removed:
+        parts.append(f"{len(removed)} task(s) no longer fit")
+    if not parts:
+        summary = "Plan re-evaluated — no changes needed."
+    else:
+        summary = "Plan updated — " + ", ".join(parts) + "."
 
-@dataclass
-class Reminder:
-    """A scheduled notification for an upcoming task (stretch goal)."""
-
-    task_reference: Task
-    remind_before_minutes: int
-    message: str = ""
-
-    def send_reminder(self) -> None:
-        """Trigger a notification to the user."""
-        # TODO: implement
-        pass
-
-    def check_overdue(self) -> bool:
-        """Return True if the referenced task is past due."""
-        # TODO: implement
-        pass
+    return new_plan, summary

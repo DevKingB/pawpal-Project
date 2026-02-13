@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from enum import Enum
 from typing import Optional, Iterable, Tuple, List
+from copy import copy as _copy
 
 
 # ──────────────────────────────────────────────
@@ -456,28 +457,65 @@ def regenerate_plan_system(
     # Run scheduler
     new_plan = scheduler.generate_plan(pets_list, windows_list)
 
-    # If some finished tasks were removed by the scheduler, restore them from the existing plan
-    existing_map = {t.task_id: t for t in existing_tasks}
-    # build set of task ids present in new_plan
-    present_ids = set()
-    if hasattr(new_plan, "scheduled_tasks"):
-        present_ids.update(t.task_id for t in new_plan.scheduled_tasks)
-    if hasattr(new_plan, "deferred_tasks"):
-        present_ids.update(t.task_id for t in new_plan.deferred_tasks)
-    if hasattr(new_plan, "backlog"):
-        present_ids.update(t.task_id for t in new_plan.backlog)
+    # Compute capacity correctly: completed/skipped still consume today's minutes
+    total_capacity = sum(w.get_duration_minutes() for w in windows_list)
+    finished_minutes = sum(
+        t.duration for t in existing_tasks
+        if t.status in (TaskStatus.COMPLETED, TaskStatus.SKIPPED)
+    )
+    # available minutes for scheduling new (active) tasks
+    available_capacity = max(total_capacity - finished_minutes, 0)
 
-    # For any finished task that isn't present, re-insert it into scheduled_tasks (preserve status)
+    # Build plan lists from the scheduler output
+    new_scheduled = list(getattr(new_plan, "scheduled_tasks", []) or [])
+    new_deferred = list(getattr(new_plan, "deferred_tasks", []) or [])
+    new_backlog = list(getattr(new_plan, "backlog", []) or [])
+
+    # Count only active (non-finished) minutes from scheduler output
+    def is_finished_status(t): 
+        return t.status in (TaskStatus.COMPLETED, TaskStatus.SKIPPED)
+    active_scheduled_minutes = sum(t.duration for t in new_scheduled if not is_finished_status(t))
+
+    # If scheduler placed more active minutes than available (given finished tasks consume time),
+    # trim active tasks until we fit into available_capacity.
+    if active_scheduled_minutes > available_capacity:
+        rank = {Priority.LOW: 0, Priority.MEDIUM: 1, Priority.HIGH: 2}
+        # select active tasks and remove lowest-priority, largest-duration first
+        active_tasks = [t for t in new_scheduled if not is_finished_status(t)]
+        active_tasks.sort(key=lambda t: (rank.get(t.priority, 0), -t.duration))
+        while active_scheduled_minutes > available_capacity and active_tasks:
+            to_remove = active_tasks.pop(0)
+            # remove first matching active instance
+            for i, t in enumerate(new_scheduled):
+                if t.task_id == to_remove.task_id and not is_finished_status(t):
+                    removed = new_scheduled.pop(i)
+                    break
+            if removed.priority == Priority.LOW:
+                new_backlog.append(removed)
+            else:
+                new_deferred.append(removed)
+            active_scheduled_minutes -= removed.duration
+
+    # Replace plan lists with adjusted ones
+    new_plan.scheduled_tasks = new_scheduled
+    new_plan.deferred_tasks = new_deferred
+    new_plan.backlog = new_backlog
+
+    # Restore finished tasks from existing_plan if missing (do not change capacity calculations)
+    existing_map = {t.task_id: t for t in existing_tasks}
+    present_ids = {t.task_id for t in (new_plan.scheduled_tasks or []) + (new_plan.deferred_tasks or []) + (new_plan.backlog or [])}
     for tid, status in finished.items():
         if tid not in present_ids and tid in existing_map:
-            restored = existing_map[tid]
+            restored_orig = existing_map[tid]
+            restored = _copy.copy(restored_orig)
             restored.status = status
-            if not hasattr(new_plan, "scheduled_tasks"):
+            if new_plan.scheduled_tasks is None:
                 new_plan.scheduled_tasks = []
-            new_plan.scheduled_tasks.append(restored)
-            present_ids.add(tid)
+            if all(t.task_id != restored.task_id for t in new_plan.scheduled_tasks):
+                new_plan.scheduled_tasks.append(restored)
+                present_ids.add(restored.task_id)
 
-    # Restore finished statuses
+    # Re-apply finished statuses to any present tasks
     new_tasks = []
     if hasattr(new_plan, "scheduled_tasks"):
         new_tasks.extend(new_plan.scheduled_tasks)

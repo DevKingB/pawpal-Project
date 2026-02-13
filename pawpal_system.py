@@ -8,10 +8,10 @@ All core objects, enums, and data structures live here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, timedelta, time
 from enum import Enum
 from typing import Optional, Iterable, Tuple, List
-from copy import copy as _copy
+import copy as _copy
 
 
 # ──────────────────────────────────────────────
@@ -273,6 +273,8 @@ class DailyPlan:
     explanation: dict[int, str] = field(default_factory=dict)
     # explanation format: {task_id: "reason this task was placed here"}
     status: PlanStatus = PlanStatus.DRAFT
+    #! BUG: add an availability snapshot (list of tuples or serializable form)
+    availability_snapshot: list[tuple[str, str, str]] = field(default_factory=list)
 
     def accept(self) -> None:
         """Promote the plan from DRAFT to ACCEPTED."""
@@ -349,6 +351,10 @@ class Scheduler:
 
         self.constraints = availability
 
+        # start a fresh per-run score cache to avoid recomputing _score_task for the same task
+        # this cache is intentionally short-lived and tied to a single generate_plan invocation
+        self._score_cache = {}
+
         # 2. Calculate total available minutes
         total_available = sum(w.get_duration_minutes() for w in availability)
 
@@ -386,8 +392,17 @@ class Scheduler:
 
         # 5. Build and return the DailyPlan
         owner = User(user_id=0, username="system", email="", password_hash="")
+        plan_date = date.today()
+        # build a compact snapshot ONLY for the plan date
+        plan_day = plan_date.weekday()
+        snapshot = [
+            (w.day_of_week, w.start.strftime("%H:%M"), w.end.strftime("%H:%M"))
+            for w in availability
+            if getattr(w, "day_of_week", None) == plan_day
+        ]
+
         return DailyPlan(
-            date=date.today(),
+            date=plan_date,
             owner=owner,
             scheduled_tasks=scheduled,
             deferred_tasks=deferred,
@@ -395,13 +410,12 @@ class Scheduler:
             total_duration=time_used,
             explanation=explanation,
             status=PlanStatus.DRAFT,
+            availability_snapshot=snapshot,
         )
 
     def _score_task(self, task: Task) -> float:
         """Calculate the composite score for a single task."""
-        # TODO #12a: days_deferred only increments on MISSED (not on
-        # scheduler-deferred or skipped). Scoring formula is correct,
-        # but the input (days_deferred) is never updated by the app yet.
+        # TODO #12a: days_deferred only increments on MISSED ...
         priority_weights = {
             Priority.HIGH: 3.0,
             Priority.MEDIUM: 2.0,
@@ -410,9 +424,22 @@ class Scheduler:
         weight = priority_weights[task.priority]
         return weight * (1 + task.days_deferred)
 
+    def _score_cached(self, task: Task) -> float:
+        """Per-run cached wrapper around _score_task."""
+        cache = getattr(self, "_score_cache", None)
+        if cache is None:
+            return self._score_task(task)
+        tid = getattr(task, "task_id", id(task))
+        if tid in cache:
+            return cache[tid]
+        v = self._score_task(task)
+        cache[tid] = v
+        return v
+
     def prioritize_tasks(self) -> list[Task]:
         """Score and sort tasks by weighted composite score (descending)."""
-        return sorted(self.tasks, key=lambda t: self._score_task(t), reverse=True)
+        # use per-run cache when available to avoid repeated scoring work
+        return sorted(self.tasks, key=lambda t: self._score_cached(t), reverse=True)
 
     def resolve_conflicts(self) -> list[Task]:
         """Identify tasks that don't fit and return them with reasons for deferral."""

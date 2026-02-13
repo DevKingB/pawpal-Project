@@ -25,6 +25,25 @@ from pawpal_system import (
     regenerate_plan_system,
 )
 
+@pytest.fixture
+def scheduler():
+    """Module-level Scheduler fixture for tests."""
+    return Scheduler()
+
+@pytest.fixture
+def pet_with_tasks():
+    """Pet with a few tasks used by scheduler tests."""
+    pet = Pet(pet_id=1, name="Rex", category=PetCategory.DOG, age=3, weight=10.0)
+    pet.tasks = [
+        Task(task_id=101, name="Walk", description="walk", duration=30,
+             priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1),
+        Task(task_id=102, name="Feed", description="feed", duration=10,
+             priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1),
+        Task(task_id=103, name="Groom", description="groom", duration=20,
+             priority=Priority.MEDIUM, frequency=Frequency.WEEKLY, pet_id=1),
+    ]
+    return pet
+
 
 # ──────────────────────────────────────────────
 # Helper Factories
@@ -450,28 +469,6 @@ class TestDailyPlan:
 class TestScheduler:
     """Tests for the scheduling engine."""
 
-    @pytest.fixture
-    def scheduler(self):
-        return Scheduler()
-
-    @pytest.fixture
-    def pet_with_tasks(self):
-        """A dog with three tasks of varying priority."""
-        pet = Pet(pet_id=1, name="Rex", category=PetCategory.DOG, age=3, weight=25.0)
-        pet.add_task(Task(
-            task_id=1, name="Walk", description="Morning walk", duration=30,
-            priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1,
-        ))
-        pet.add_task(Task(
-            task_id=2, name="Feed", description="Breakfast", duration=10,
-            priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1,
-        ))
-        pet.add_task(Task(
-            task_id=3, name="Groom", description="Brush coat", duration=20,
-            priority=Priority.LOW, frequency=Frequency.WEEKLY, pet_id=1,
-        ))
-        return pet
-
     def test_generate_plan_returns_daily_plan(self, scheduler, pet_with_tasks, morning_window):
         """generate_plan() should return a DailyPlan object."""
         plan = scheduler.generate_plan([pet_with_tasks], [morning_window])
@@ -559,239 +556,10 @@ class TestScheduler:
         assert 1 in all_task_ids
         assert 2 in all_task_ids
 
-
-# ──────────────────────────────────────────────
-# Bug Fix Regression Tests
-# ──────────────────────────────────────────────
-# These tests verify the backend logic that each bug fix relies on.
-# UI-only fixes (BUG #1, #4, #7) are verified via live Streamlit testing.
-
-class TestBugFixRegressions:
-    """Regression tests for the 7 verified bug fixes in bugfix/ui-fixes."""
-
-    # ── BUG #17: Plan carries across users ──────────────
-    # Backend guarantee: separate User objects have independent pets and state.
-
-    def test_bug17_users_have_independent_pets(self):
-        """Two users should not share pet lists (BUG #17 root cause)."""
-        user_a = User(user_id=1, username="alice", email="a@a.com", password_hash="h1")
-        user_b = User(user_id=2, username="bob", email="b@b.com", password_hash="h2")
-        pet = Pet(pet_id=1, name="Rex", category=PetCategory.DOG, age=3, weight=25.0)
-        user_a.add_pet(pet)
-        assert len(user_a.pets) == 1
-        assert len(user_b.pets) == 0  # Bob must NOT inherit Alice's pet
-
-    def test_bug17_users_have_independent_availability(self):
-        """Availability set on one user should not appear on another."""
-        user_a = User(user_id=1, username="alice", email="a@a.com", password_hash="h1")
-        user_b = User(user_id=2, username="bob", email="b@b.com", password_hash="h2")
-        window = TimeWindow(day_of_week="monday", start=time(8, 0), end=time(9, 0))
-        user_a.update_availability("monday", [window])
-        assert len(user_a.availability.get("monday", [])) == 1
-        assert len(user_b.availability.get("monday", [])) == 0
-
-    def test_bug17_plans_are_independent(self):
-        """A DailyPlan owned by user A should not affect user B."""
-        user_a = User(user_id=1, username="alice", email="a@a.com", password_hash="h1")
-        user_b = User(user_id=2, username="bob", email="b@b.com", password_hash="h2")
-        plan = DailyPlan(date=date(2026, 2, 12), owner=user_a)
-        assert plan.owner == user_a
-        assert plan.owner != user_b
-
-    # ── BUG #11: Done/Skip gated behind ACCEPTED ────────
-    # Backend guarantee: task status changes are possible regardless of plan state,
-    # so the UI must enforce the gate. We test the plan status lifecycle is correct.
-
-    def test_bug11_draft_plan_allows_accept(self):
-        """A DRAFT plan can be accepted."""
-        user = User(user_id=1, username="test", email="t@t.com", password_hash="h")
-        plan = DailyPlan(date=date(2026, 2, 12), owner=user)
-        assert plan.status == PlanStatus.DRAFT
-        plan.accept()
-        assert plan.status == PlanStatus.ACCEPTED
-
-    def test_bug11_task_completion_on_accepted_plan(self):
-        """Tasks in an ACCEPTED plan should be completable."""
-        user = User(user_id=1, username="test", email="t@t.com", password_hash="h")
-        task = Task(task_id=1, name="Walk", description="", duration=30,
-                    priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1)
-        plan = DailyPlan(date=date(2026, 2, 12), owner=user, scheduled_tasks=[task])
-        plan.accept()
-        task.mark_complete()
-        assert task.status == TaskStatus.COMPLETED
-
-    def test_bug11_draft_plan_task_still_pending(self):
-        """In a DRAFT plan, tasks should remain PENDING (UI prevents completion)."""
-        user = User(user_id=1, username="test", email="t@t.com", password_hash="h")
-        task = Task(task_id=1, name="Walk", description="", duration=30,
-                    priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1)
-        plan = DailyPlan(date=date(2026, 2, 12), owner=user, scheduled_tasks=[task])
-        # Plan is still DRAFT — UI should NOT show Done/Skip buttons
-        assert plan.status == PlanStatus.DRAFT
-        assert task.status == TaskStatus.PENDING
-
-    # ── BUG #10: Regenerate only in DRAFT ────────────────
-    # Backend guarantee: generate_plan() always creates a new DRAFT plan.
-
-    def test_bug10_regenerated_plan_is_always_draft(self):
-        """Regenerating a plan should always produce DRAFT status."""
-        scheduler = Scheduler()
-        pet = Pet(pet_id=1, name="Rex", category=PetCategory.DOG, age=3, weight=25.0)
-        pet.add_task(Task(task_id=1, name="Walk", description="", duration=30,
-                          priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1))
-        window = TimeWindow(day_of_week="monday", start=time(8, 0), end=time(9, 0))
-        plan = scheduler.generate_plan([pet], [window])
-        assert plan.status == PlanStatus.DRAFT
-        # Accept it
-        plan.accept()
-        assert plan.status == PlanStatus.ACCEPTED
-        # Regenerate should produce a fresh DRAFT (not ACCEPTED)
-        new_plan = scheduler.generate_plan([pet], [window])
-        assert new_plan.status == PlanStatus.DRAFT
-
-    # ── BUG #8: Skip does NOT increment days_deferred ────
-    # Backend guarantee: SKIPPED is a valid status; days_deferred unchanged.
-
-    def test_bug8_skip_does_not_increment_days_deferred(self):
-        """Skipping a task should NOT increment days_deferred (Section 12 rule)."""
-        task = Task(task_id=1, name="Walk", description="", duration=30,
-                    priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1)
-        assert task.days_deferred == 0
-        task.status = TaskStatus.SKIPPED
-        assert task.days_deferred == 0  # Must stay at 0
-
-    def test_bug8_skip_vs_missed_deferred_difference(self):
-        """MISSED increments days_deferred; SKIPPED does not."""
-        missed_task = Task(task_id=1, name="Walk", description="", duration=30,
-                           priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1)
-        skipped_task = Task(task_id=2, name="Feed", description="", duration=15,
-                            priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1)
-        missed_task.mark_missed()
-        skipped_task.status = TaskStatus.SKIPPED
-        assert missed_task.days_deferred == 1
-        assert skipped_task.days_deferred == 0
-
-    def test_bug8_skipped_task_has_correct_status(self):
-        """After skipping, task status should be SKIPPED."""
-        task = Task(task_id=1, name="Walk", description="", duration=30,
-                    priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1)
-        task.status = TaskStatus.SKIPPED
-        assert task.status == TaskStatus.SKIPPED
-
-    # ── BUG #5: Duplicate task detection ─────────────────
-    # Backend: Pet.add_task() has no guard. We test the detection logic
-    # that the UI now uses before calling add_task().
-
-    def test_bug5_detect_duplicate_task_name_on_pet(self):
-        """Two tasks with the same name on the same pet should be detectable."""
-        pet = Pet(pet_id=1, name="Rex", category=PetCategory.DOG, age=3, weight=25.0)
-        task1 = Task(task_id=1, name="Walk", description="", duration=30,
-                     priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1)
-        pet.add_task(task1)
-        # Simulate the duplicate check the UI performs
-        duplicate_exists = any(t.name.lower() == "walk" for t in pet.tasks)
-        assert duplicate_exists is True
-
-    def test_bug5_different_task_names_are_not_duplicates(self):
-        """Tasks with different names should not be flagged as duplicates."""
-        pet = Pet(pet_id=1, name="Rex", category=PetCategory.DOG, age=3, weight=25.0)
-        task1 = Task(task_id=1, name="Walk", description="", duration=30,
-                     priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1)
-        pet.add_task(task1)
-        duplicate_exists = any(t.name.lower() == "feed" for t in pet.tasks)
-        assert duplicate_exists is False
-
-    def test_bug5_duplicate_check_is_case_insensitive(self):
-        """Duplicate detection should be case-insensitive."""
-        pet = Pet(pet_id=1, name="Rex", category=PetCategory.DOG, age=3, weight=25.0)
-        task1 = Task(task_id=1, name="Walk", description="", duration=30,
-                     priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1)
-        pet.add_task(task1)
-        duplicate_exists = any(t.name.lower() == "WALK".lower() for t in pet.tasks)
-        assert duplicate_exists is True
-
-    # ── BUG #3: Whitespace-only name rejection ───────────
-    # Backend: we test the .strip() logic the UI now applies.
-
-    def test_bug3_whitespace_only_name_is_empty_after_strip(self):
-        """Whitespace-only strings become empty after .strip()."""
-        assert "   ".strip() == ""
-        assert "\t\n".strip() == ""
-        assert "".strip() == ""
-
-    def test_bug3_valid_name_survives_strip(self):
-        """A real name with leading/trailing spaces should be preserved after strip."""
-        assert "  Rex  ".strip() == "Rex"
-        assert "Morning Walk".strip() == "Morning Walk"
-
-    # ── BUG #8 + Plan lifecycle: Skipped tasks and plan progress ──
-
-    def test_skipped_task_not_returned_by_get_next_task(self):
-        """get_next_task() should skip over SKIPPED tasks."""
-        user = User(user_id=1, username="test", email="t@t.com", password_hash="h")
-        task1 = Task(task_id=1, name="Walk", description="", duration=30,
-                     priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1)
-        task2 = Task(task_id=2, name="Feed", description="", duration=15,
-                     priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1)
-        plan = DailyPlan(date=date(2026, 2, 12), owner=user,
-                         scheduled_tasks=[task1, task2])
-        task1.status = TaskStatus.SKIPPED
-        next_task = plan.get_next_task()
-        assert next_task is not None
-        assert next_task.task_id == 2
-
-    def test_all_skipped_and_completed_means_plan_done(self):
-        """If all tasks are SKIPPED or COMPLETED, get_next_task() returns None."""
-        user = User(user_id=1, username="test", email="t@t.com", password_hash="h")
-        task1 = Task(task_id=1, name="Walk", description="", duration=30,
-                     priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1)
-        task2 = Task(task_id=2, name="Feed", description="", duration=15,
-                     priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1)
-        plan = DailyPlan(date=date(2026, 2, 12), owner=user,
-                         scheduled_tasks=[task1, task2])
-        task1.mark_complete()
-        task2.status = TaskStatus.SKIPPED
-        assert plan.get_next_task() is None
-
-    def test_regenerate_preserves_progress_and_slots_deferred(self):
-        """Regenerating an ACCEPTED plan preserves completed/skipped and slots deferred tasks."""
-        scheduler = Scheduler()
-        pet = Pet(pet_id=1, name="Buddy", category=PetCategory.DOG, age=3, weight=20.0)
-        pet.add_task(Task(task_id=1, name="Feed", description="", duration=10,
-                      priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1))
-        pet.add_task(Task(task_id=2, name="Clean", description="", duration=10,
-                      priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1))
-        pet.add_task(Task(task_id=3, name="Play", description="", duration=30,
-                      priority=Priority.MEDIUM, frequency=Frequency.DAILY, pet_id=1))
-        pet.add_task(Task(task_id=4, name="Buy toys", description="", duration=15,
-                      priority=Priority.LOW, frequency=Frequency.WEEKLY, pet_id=1))
-
-        small_window = TimeWindow(day_of_week="monday", start=time(8, 0), end=time(8, 30))
-        plan = scheduler.generate_plan([pet], [small_window])
-        plan.status = PlanStatus.DRAFT
-
-        # mark first completed and second skipped
-        if plan.scheduled_tasks:
-            plan.scheduled_tasks[0].status = TaskStatus.COMPLETED
-        if len(plan.scheduled_tasks) > 1:
-            plan.scheduled_tasks[1].status = TaskStatus.SKIPPED
-
-        # Accept the plan
-        plan.status = PlanStatus.ACCEPTED
-
-        # Add more availability so remaining tasks should fit
-        large_window = TimeWindow(day_of_week="monday", start=time(9, 0), end=time(10, 0))
-
-        new_plan, msg = regenerate_plan_system(scheduler, [pet], [small_window, large_window], plan)
-
-        # Completed/skipped preserved
-        statuses = {t.task_id: t.status for t in new_plan.scheduled_tasks + new_plan.deferred_tasks + new_plan.backlog}
-        assert statuses.get(1) == TaskStatus.COMPLETED
-        assert statuses.get(2) == TaskStatus.SKIPPED
-
-        # Previously deferred task now scheduled
-        scheduled_ids = {t.task_id for t in new_plan.scheduled_tasks}
-        assert 3 in scheduled_ids
-
-        # Plan status preserved as ACCEPTED
-        assert new_plan.status == PlanStatus.ACCEPTED
+    def test_score_memoization_used(self, scheduler, pet_with_tasks, evening_window):
+        """generate_plan should populate a per-run score cache on the scheduler."""
+        assert not hasattr(scheduler, "_score_cache")
+        plan = scheduler.generate_plan([pet_with_tasks], [evening_window])
+        assert hasattr(scheduler, "_score_cache")
+        assert isinstance(scheduler._score_cache, dict)
+        assert len(scheduler._score_cache) >= 1

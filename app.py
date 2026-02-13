@@ -1,6 +1,6 @@
 import streamlit as st
 import hashlib
-from datetime import date, time
+from datetime import date, time, datetime
 
 from pawpal_system import (
     DailyPlan,
@@ -14,6 +14,7 @@ from pawpal_system import (
     TaskStatus,
     TimeWindow,
     User,
+    regenerate_plan_system,
 )
 
 # ──────────────────────────────────────────────
@@ -49,6 +50,11 @@ def init_session_state():
         st.session_state.task_form_counter = 0
     if "page" not in st.session_state:
         st.session_state.page = "login"
+    # BUG C: Track availability changes for plan regeneration
+    if "availability_changed" not in st.session_state:
+        st.session_state.availability_changed = False
+    if "success_message" not in st.session_state:
+        st.session_state.success_message = None
 
 init_session_state()
 
@@ -62,9 +68,53 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 
+def show_success_message():
+    """Display and clear any pending success message."""
+    if st.session_state.success_message:
+        st.success(st.session_state.success_message)
+        st.session_state.success_message = None
+
+
 def get_user() -> User:
-    """Retrieve the current user from session state."""
+    """Return the currently logged-in user."""
     return st.session_state.user
+
+
+def regenerate_plan_preserving_progress(user: User, existing_plan: DailyPlan) -> str:
+    """
+    BUG C FIX: UI wrapper — gather pets/windows from user, delegate to
+    pawpal_system.regenerate_plan_system(), update session state, and return summary.
+    """
+    # Snapshot finished statuses is handled inside regenerate_plan_system (system-side)
+    # Gather pets and flatten user's availability into a list of TimeWindow
+    pets = list(user.pets or [])
+    all_windows = []
+    if isinstance(user.availability, dict):
+        for day_windows in user.availability.values():
+            if day_windows:
+                all_windows.extend(day_windows)
+    else:
+        all_windows = list(user.availability or [])
+
+    # Defensive defaults
+    pets = list(pets)
+    all_windows = list(all_windows)
+
+    if not pets:
+        return "No pets to schedule."
+
+    scheduler = st.session_state.get("scheduler")
+    if scheduler is None:
+        scheduler = Scheduler()
+        st.session_state.scheduler = scheduler
+
+    # Delegate to system-level helper
+    new_plan, msg = regenerate_plan_system(scheduler, pets, all_windows, existing_plan)
+
+    # Update session state with regenerated plan
+    st.session_state.current_plan = new_plan
+
+    return msg
 
 
 # ──────────────────────────────────────────────
@@ -392,56 +442,89 @@ def render_add_task_page():
 # ──────────────────────────────────────────────
 
 def render_availability_page():
-    """Render the availability management page."""
-    user = get_user()
+    """Page for setting daily availability windows."""
     st.title("⏰ Set Your Availability")
     st.caption("Define your free time windows for each day. The scheduler uses these to build your plan.")
 
-    days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    user = get_user()
+    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
     for day in days:
-        with st.expander(f"📅 {day.capitalize()}", expanded=False):
-            existing = user.availability.get(day, [])
+        with st.expander(f"📅 {day}"):
+            # Show existing windows for this day
+            day_lower = day.lower()
+            day_windows = [w for w in user.availability.get(day_lower, []) if w.day_of_week == day_lower]
 
-            # Show existing windows
-            if existing:
-                for i, w in enumerate(existing):
-                    st.write(f"  {w.start.strftime('%H:%M')} — {w.end.strftime('%H:%M')} ({w.get_duration_minutes()} min)")
+            if day_windows:
+                for w in day_windows:
+                    duration = int((datetime.combine(date.today(), w.end) -
+                                    datetime.combine(date.today(), w.start)).total_seconds() / 60)
+                    st.write(f"{w.start.strftime('%H:%M')} — {w.end.strftime('%H:%M')} ({duration} min)")
+            else:
+                st.write("No windows set.")
 
-            # Add window form
+            # Time pickers for adding a new window
             col1, col2, col3 = st.columns([2, 2, 1])
+            time_options = [time(h, m) for h in range(24) for m in (0, 15, 30, 45)]
+            time_labels = [t.strftime("%H:%M") for t in time_options]
+
             with col1:
-                start_time = st.time_input(f"Start", value=time(8, 0), key=f"{day}_start")
+                start_idx = st.selectbox(
+                    "Start", range(len(time_options)),
+                    format_func=lambda i: time_labels[i],
+                    key=f"start_{day}",
+                    label_visibility="visible"
+                )
             with col2:
-                end_time = st.time_input(f"End", value=time(9, 0), key=f"{day}_end")
+                end_idx = st.selectbox(
+                    "End", range(len(time_options)),
+                    format_func=lambda i: time_labels[i],
+                    key=f"end_{day}",
+                    index=min(4, len(time_options) - 1),
+                    label_visibility="visible"
+                )
             with col3:
-                st.write("")  # spacing
-                st.write("")
-                if st.button("Add", key=f"{day}_add"):
-                    if end_time <= start_time:
-                        # FIX BUG #7: toast() avoids expanding the component
-                        st.toast("⚠️ End time must be after start time.")
+                st.write("")  # spacer
+                if st.button("Add", key=f"add_{day}"):
+                    start_t = time_options[start_idx]
+                    end_t = time_options[end_idx]
+                    if start_t >= end_t:
+                        st.error("Start must be before end.")
                     else:
-                        window = TimeWindow(start=start_time, end=end_time)
-                        current = user.availability.get(day, [])
-                        user.update_availability(day, current + [window])
+                        new_window = TimeWindow(
+                            day_of_week=day_lower,
+                            start=start_t,
+                            end=end_t,
+                        )
+                        if day_lower not in user.availability:
+                            user.availability[day_lower] = []
+                        user.availability[day_lower].append(new_window)
+
+                        # ── BUG C FIX: Re-evaluate plan on availability change ──
+                        plan = st.session_state.current_plan
+                        if plan is not None:
+                            if plan.status == PlanStatus.DRAFT:
+                                msg = regenerate_plan_preserving_progress(user, plan)
+                                st.toast(f"🔄 {msg}")
+                            elif plan.status == PlanStatus.ACCEPTED:
+                                st.session_state.availability_changed = True
+                        # ─────────────────────────────────────────────────────────
+
                         st.rerun()
 
-            if existing and st.button(f"Clear {day}", key=f"{day}_clear"):
-                user.update_availability(day, [])
-                st.rerun()
-
-    # Summary
-    st.divider()
-    st.subheader("Weekly Summary")
-    total_weekly = 0
-    for day in days:
-        windows = user.availability.get(day, [])
-        day_total = sum(w.get_duration_minutes() for w in windows)
-        total_weekly += day_total
-        if windows:
-            st.write(f"**{day.capitalize()}:** {len(windows)} window(s), {day_total} min available")
-    st.metric("Total Weekly Availability", f"{total_weekly} min")
+            # Clear all windows for this day
+            if day_windows:
+                if st.button(f"Clear {day.lower()}", key=f"clear_{day}"):
+                    user.availability[day_lower] = []  # <-- FIXED
+                    # Plan re-evaluation logic here as above
+                    plan = st.session_state.current_plan
+                    if plan is not None:
+                        if plan.status == PlanStatus.DRAFT:
+                            msg = regenerate_plan_preserving_progress(user, plan)
+                            st.toast(f"🔄 {msg}")
+                        elif plan.status == PlanStatus.ACCEPTED:
+                            st.session_state.availability_changed = True
+                    st.rerun()
 
 
 # ──────────────────────────────────────────────
@@ -449,13 +532,30 @@ def render_availability_page():
 # ──────────────────────────────────────────────
 
 def render_plan_page():
-    """Render the plan generation and execution page."""
-    user = get_user()
-    st.title("📅 Daily Plan")
+    """Page for generating and viewing the daily care plan."""
+    st.title("📋 Daily Care Plan")
 
-    if not user.pets:
-        st.warning("Add pets and tasks first.")
-        return
+    user = get_user()
+    plan = st.session_state.current_plan
+
+    # ── BUG C FIX: Prompt to regenerate if availability changed during ACCEPTED plan ──
+    if (st.session_state.get("availability_changed")
+            and plan is not None
+            and plan.status == PlanStatus.ACCEPTED):
+        st.info("📢 Your availability has changed since this plan was accepted. "
+                "Regenerate to fit deferred tasks into your new free time?")
+        col_regen, col_dismiss = st.columns(2)
+        with col_regen:
+            if st.button("🔄 Regenerate Plan", key="regen_availability"):
+                msg = regenerate_plan_preserving_progress(user, plan)
+                st.session_state.availability_changed = False
+                st.success(msg)
+                st.rerun()
+        with col_dismiss:
+            if st.button("Keep Current Plan", key="dismiss_availability"):
+                st.session_state.availability_changed = False
+                st.rerun()
+    # ──────────────────────────────────────────────────────────────────────────────────
 
     # Determine today's day of week for availability lookup
     today = date.today()
@@ -472,13 +572,16 @@ def render_plan_page():
     total_available = sum(w.get_duration_minutes() for w in today_windows)
     st.info(f"**{day_name.capitalize()}** — {len(today_windows)} window(s), {total_available} min available")
 
-    # Generate plan button
-    if st.button("🔄 Generate Plan", use_container_width=True):
-        scheduler = st.session_state.scheduler
-        plan = scheduler.generate_plan(user.pets, today_windows)
-        plan.owner = user  # Replace placeholder with real user
-        st.session_state.current_plan = plan
-        st.rerun()
+    # FIX BUG #10: Only show Generate Plan button if no plan exists or plan is DRAFT.
+    # Once ACCEPTED, the plan is locked — user must complete or wait for next day.
+    plan = st.session_state.current_plan
+    if not plan or plan.status == PlanStatus.DRAFT:
+        if st.button("🔄 Generate Plan", use_container_width=True):
+            scheduler = st.session_state.scheduler
+            new_plan = scheduler.generate_plan(user.pets, today_windows)
+            new_plan.owner = user
+            st.session_state.current_plan = new_plan
+            st.rerun()
 
     plan = st.session_state.current_plan
     if not plan:

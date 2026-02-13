@@ -22,6 +22,7 @@ from pawpal_system import (
     TaskStatus,
     TimeWindow,
     User,
+    regenerate_plan_system,
 )
 
 
@@ -84,13 +85,19 @@ def sample_user():
 @pytest.fixture
 def morning_window():
     """An 8:00–9:00 AM time window."""
-    return TimeWindow(start=time(8, 0), end=time(9, 0))
+    return TimeWindow(day_of_week="monday", start=time(8, 0), end=time(9, 0))
 
 
 @pytest.fixture
 def evening_window():
     """A 6:00–8:00 PM time window."""
-    return TimeWindow(start=time(18, 0), end=time(20, 0))
+    return TimeWindow(day_of_week="monday", start=time(18, 0), end=time(20, 0))
+
+
+@pytest.fixture
+def midday_window():
+    """A 12:00–12:30 PM time window."""
+    return TimeWindow(day_of_week="monday", start=time(12, 0), end=time(12, 30))
 
 
 # ──────────────────────────────────────────────
@@ -110,12 +117,12 @@ class TestTimeWindow:
 
     def test_duration_thirty_minutes(self):
         """A 30-minute window."""
-        window = TimeWindow(start=time(12, 0), end=time(12, 30))
+        window = TimeWindow(day_of_week="monday", start=time(12, 0), end=time(12, 30))
         assert window.get_duration_minutes() == 30
 
     def test_duration_zero(self):
         """Same start and end should return 0."""
-        window = TimeWindow(start=time(10, 0), end=time(10, 0))
+        window = TimeWindow(day_of_week="monday", start=time(10, 0), end=time(10, 0))
         assert window.get_duration_minutes() == 0
 
 
@@ -487,7 +494,7 @@ class TestScheduler:
 
     def test_tasks_that_dont_fit_are_deferred(self, scheduler, pet_with_tasks):
         """If time is too short, some tasks should land in deferred_tasks or backlog."""
-        tiny_window = TimeWindow(start=time(8, 0), end=time(8, 15))  # only 15 min
+        tiny_window = TimeWindow(day_of_week="monday", start=time(8, 0), end=time(8, 15))  # only 15 min
         plan = scheduler.generate_plan([pet_with_tasks], [tiny_window])
         total_scheduled = len(plan.scheduled_tasks)
         total_deferred = len(plan.deferred_tasks) + len(plan.backlog)
@@ -496,7 +503,7 @@ class TestScheduler:
 
     def test_low_priority_deferred_goes_to_backlog(self, scheduler, pet_with_tasks):
         """Low-priority tasks that don't fit should go to backlog, not deferred_tasks."""
-        tiny_window = TimeWindow(start=time(8, 0), end=time(8, 15))
+        tiny_window = TimeWindow(day_of_week="monday", start=time(8, 0), end=time(8, 15))
         plan = scheduler.generate_plan([pet_with_tasks], [tiny_window])
         backlog_priorities = [t.priority for t in plan.backlog]
         deferred_priorities = [t.priority for t in plan.deferred_tasks]
@@ -578,7 +585,7 @@ class TestBugFixRegressions:
         """Availability set on one user should not appear on another."""
         user_a = User(user_id=1, username="alice", email="a@a.com", password_hash="h1")
         user_b = User(user_id=2, username="bob", email="b@b.com", password_hash="h2")
-        window = TimeWindow(start=time(8, 0), end=time(9, 0))
+        window = TimeWindow(day_of_week="monday", start=time(8, 0), end=time(9, 0))
         user_a.update_availability("monday", [window])
         assert len(user_a.availability.get("monday", [])) == 1
         assert len(user_b.availability.get("monday", [])) == 0
@@ -632,7 +639,7 @@ class TestBugFixRegressions:
         pet = Pet(pet_id=1, name="Rex", category=PetCategory.DOG, age=3, weight=25.0)
         pet.add_task(Task(task_id=1, name="Walk", description="", duration=30,
                           priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1))
-        window = TimeWindow(start=time(8, 0), end=time(9, 0))
+        window = TimeWindow(day_of_week="monday", start=time(8, 0), end=time(9, 0))
         plan = scheduler.generate_plan([pet], [window])
         assert plan.status == PlanStatus.DRAFT
         # Accept it
@@ -745,3 +752,46 @@ class TestBugFixRegressions:
         task1.mark_complete()
         task2.status = TaskStatus.SKIPPED
         assert plan.get_next_task() is None
+
+    def test_regenerate_preserves_progress_and_slots_deferred(self):
+        """Regenerating an ACCEPTED plan preserves completed/skipped and slots deferred tasks."""
+        scheduler = Scheduler()
+        pet = Pet(pet_id=1, name="Buddy", category=PetCategory.DOG, age=3, weight=20.0)
+        pet.add_task(Task(task_id=1, name="Feed", description="", duration=10,
+                      priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1))
+        pet.add_task(Task(task_id=2, name="Clean", description="", duration=10,
+                      priority=Priority.HIGH, frequency=Frequency.DAILY, pet_id=1))
+        pet.add_task(Task(task_id=3, name="Play", description="", duration=30,
+                      priority=Priority.MEDIUM, frequency=Frequency.DAILY, pet_id=1))
+        pet.add_task(Task(task_id=4, name="Buy toys", description="", duration=15,
+                      priority=Priority.LOW, frequency=Frequency.WEEKLY, pet_id=1))
+
+        small_window = TimeWindow(day_of_week="monday", start=time(8, 0), end=time(8, 30))
+        plan = scheduler.generate_plan([pet], [small_window])
+        plan.status = PlanStatus.DRAFT
+
+        # mark first completed and second skipped
+        if plan.scheduled_tasks:
+            plan.scheduled_tasks[0].status = TaskStatus.COMPLETED
+        if len(plan.scheduled_tasks) > 1:
+            plan.scheduled_tasks[1].status = TaskStatus.SKIPPED
+
+        # Accept the plan
+        plan.status = PlanStatus.ACCEPTED
+
+        # Add more availability so remaining tasks should fit
+        large_window = TimeWindow(day_of_week="monday", start=time(9, 0), end=time(10, 0))
+
+        new_plan, msg = regenerate_plan_system(scheduler, [pet], [small_window, large_window], plan)
+
+        # Completed/skipped preserved
+        statuses = {t.task_id: t.status for t in new_plan.scheduled_tasks + new_plan.deferred_tasks + new_plan.backlog}
+        assert statuses.get(1) == TaskStatus.COMPLETED
+        assert statuses.get(2) == TaskStatus.SKIPPED
+
+        # Previously deferred task now scheduled
+        scheduled_ids = {t.task_id for t in new_plan.scheduled_tasks}
+        assert 3 in scheduled_ids
+
+        # Plan status preserved as ACCEPTED
+        assert new_plan.status == PlanStatus.ACCEPTED
